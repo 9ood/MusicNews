@@ -1,0 +1,53 @@
+name: 每日选题推荐
+
+on:
+  schedule:
+    # 每天北京时间 9:00 运行 (UTC 1:00)
+    - cron: '0 1 * * *'
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  generate-topics:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v3
+
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 运行选题生成
+        env:
+          # 邮件配置
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          TO_RECIPIENTS: ${{ secrets.TO_RECIPIENTS }}
+          # AI 配置
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_API_BASE: ${{ secrets.LLM_API_BASE }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          # 代理配置（如需要）
+          HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
+          HTTPS_PROXY: ${{ secrets.HTTPS_PROXY }}
+        run: |
+          python main.py
+
+      - name: 上传日志
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: logs
+          path: "*.log"
+          retention-days: 7

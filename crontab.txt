@@ -1,0 +1,5 @@
+# MusicNews 每日定时任务配置
+# 每天早上 9:00 运行
+
+# 分 时 日 月 周
+0 9 * * * /Users/ssg/Documents/CodeX/MusicNews/run_daily.sh

@@ -1,0 +1,17 @@
+$ErrorActionPreference = "Stop"
+
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$VenvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+$PythonExe = if (Test-Path $VenvPython) { $VenvPython } else { "python" }
+
+Push-Location $RepoRoot
+try {
+    $env:MUSICNEWS_SEND_EMAIL = "0"
+    & $PythonExe "main.py"
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+} finally {
+    Remove-Item Env:\MUSICNEWS_SEND_EMAIL -ErrorAction SilentlyContinue
+    Pop-Location
+}

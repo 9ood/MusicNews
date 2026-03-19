@@ -1,0 +1,42 @@
+{
+  "id": "daily-music-topic",
+  "name": "每日音乐选题",
+  "category": "资讯类",
+  "type": "batch",
+  "status": "stopped",
+  "summary": "自动抓热点、做音乐选题、输出邮件内容。",
+  "description": "这是一个批处理项目。它会抓新闻、做 AI 选题分析，再把结果发到邮件里。现在已经接成 dashboard 上可测试、可运行、可停止的真实项目。",
+  "path": "E:/Project/codex/MusicNews",
+  "entry": "",
+  "health": "",
+  "integration": "project-config",
+  "control": {
+    "enabled": true,
+    "type": "batch",
+    "actions": ["test", "run", "stop"],
+    "testCommand": {
+      "command": "powershell",
+      "args": ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", "scripts/test.ps1"]
+    },
+    "runCommand": {
+      "command": "powershell",
+      "args": ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", "scripts/run.ps1"]
+    },
+    "stopCommand": {
+      "command": "powershell",
+      "args": ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", "scripts/stop.ps1"]
+    }
+  },
+  "paths": {
+    "logs": "logs",
+    "output": "output",
+    "data": "data"
+  },
+  "timeline": [
+    {
+      "time": "今天",
+      "title": "接入真实控制链",
+      "note": "dashboard 已经可以真实触发测试、运行和停止。"
+    }
+  ]
+}
