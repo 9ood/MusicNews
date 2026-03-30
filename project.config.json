@@ -1,18 +1,18 @@
 {
   "id": "daily-music-topic",
-  "name": "每日音乐选题",
-  "category": "资讯类",
-  "type": "batch",
+  "name": "\u6bcf\u65e5\u97f3\u4e50\u9009\u9898",
+  "category": "\u8d44\u8baf\u7c7b",
+  "type": "service",
   "status": "stopped",
-  "summary": "自动抓热点、做音乐选题、输出邮件内容。",
-  "description": "这是一个批处理项目。它会抓新闻、做 AI 选题分析，再把结果发到邮件里。现在已经接成 dashboard 上可测试、可运行、可停止的真实项目。",
+  "summary": "Auto-generate music topics and send daily email from a Windows background service.",
+  "description": "This is the production mode for MusicNews. After startup, it stays alive in the Windows background, keeps the 9:00 daily send schedule, and still supports preview checks and history viewing in dashboard.",
   "path": "E:/Project/codex/MusicNews",
   "entry": "",
-  "health": "",
+  "health": "http://127.0.0.1:4332/health",
   "integration": "project-config",
   "control": {
     "enabled": true,
-    "type": "batch",
+    "type": "service",
     "actions": ["test", "run", "stop"],
     "testCommand": {
       "command": "powershell",
@@ -25,6 +25,15 @@
     "stopCommand": {
       "command": "powershell",
       "args": ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", "scripts/stop.ps1"]
+    },
+    "processMatch": {
+      "name": "python.exe",
+      "commandLinePattern": "*service.py*"
+    },
+    "startupProbe": {
+      "initialDelayMs": 1000,
+      "attempts": 12,
+      "intervalMs": 1000
     }
   },
   "paths": {
@@ -32,11 +41,23 @@
     "output": "output",
     "data": "data"
   },
+  "reports": {
+    "runHistory": {
+      "label": "\u8fd0\u884c\u65e5\u5fd7",
+      "type": "music-topic-history",
+      "path": "output"
+    }
+  },
   "timeline": [
     {
-      "time": "今天",
-      "title": "接入真实控制链",
-      "note": "dashboard 已经可以真实触发测试、运行和停止。"
+      "time": "\u4eca\u5929",
+      "title": "\u63a5\u5165\u771f\u5b9e\u63a7\u5236\u94fe",
+      "note": "dashboard can already trigger preview, run, and stop with real commands."
+    },
+    {
+      "time": "\u4eca\u5929",
+      "title": "Windows background service",
+      "note": "After startup it stays alive in the Windows background and sends mail automatically at 9:00 every day."
     }
   ]
 }

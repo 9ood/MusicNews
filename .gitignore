@@ -50,6 +50,7 @@ output/*
 # Logs
 *.log
 logs/
+.runtime/
 
 # Test
 .pytest_cache/

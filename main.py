@@ -1,9 +1,8 @@
-"""
-MusicNews main entry.
-"""
+"""MusicNews main entry."""
 import json
 import os
 import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -18,10 +17,10 @@ RISKY_KEYWORDS = [
     "smtp",
     "starttls",
     "musicnews",
-    "系统测试",
-    "验证",
-    "链路",
-    "邮件链路",
+    "system test",
+    "verification",
+    "link check",
+    "mail link check",
 ]
 
 
@@ -53,10 +52,10 @@ def _validate_topics(topics, hotspots):
     seen_titles = set()
 
     if len(hotspots) < 10:
-        errors.append(f"热点太少：只抓到 {len(hotspots)} 条。")
+        errors.append(f"Too few hotspots: only {len(hotspots)} items.")
 
     if len(topics) < 3:
-        errors.append(f"选题太少：只生成了 {len(topics)} 条。")
+        errors.append(f"Too few topics: only {len(topics)} items.")
 
     for index, topic in enumerate(topics, start=1):
         title = str(topic.get("title", "")).strip()
@@ -66,36 +65,36 @@ def _validate_topics(topics, hotspots):
         points = topic.get("content_points", [])
 
         if len(title) < 8:
-            errors.append(f"第 {index} 条标题太短。")
+            errors.append(f"Topic {index} title is too short.")
 
         if title in seen_titles:
-            errors.append(f"第 {index} 条标题和前面重复。")
+            errors.append(f"Topic {index} title is duplicated.")
         seen_titles.add(title)
 
         if not source:
-            errors.append(f"第 {index} 条没有热点来源。")
+            errors.append(f"Topic {index} is missing hotspot source.")
 
         if not angle:
-            errors.append(f"第 {index} 条没有切入角度。")
+            errors.append(f"Topic {index} is missing angle.")
 
         if not category:
-            errors.append(f"第 {index} 条没有分类。")
+            errors.append(f"Topic {index} is missing category.")
 
         if not isinstance(points, list) or len(points) < 3:
-            errors.append(f"第 {index} 条内容方向少于 3 条。")
+            errors.append(f"Topic {index} has fewer than 3 content points.")
 
         full_text = _flatten_topic_text(topic)
         lowered = full_text.lower()
 
-        if "�" in full_text:
-            errors.append(f"第 {index} 条包含乱码字符。")
+        if "锟" in full_text:
+            errors.append(f"Topic {index} contains broken characters.")
 
         if full_text.count("?") >= 6:
-            errors.append(f"第 {index} 条问号太多，像坏内容。")
+            errors.append(f"Topic {index} has too many question marks.")
 
         for keyword in RISKY_KEYWORDS:
             if keyword in lowered:
-                errors.append(f"第 {index} 条包含危险词：{keyword}")
+                errors.append(f"Topic {index} contains risky keyword: {keyword}")
                 break
 
     return {
@@ -104,31 +103,63 @@ def _validate_topics(topics, hotspots):
     }
 
 
-def main():
+def _write_run_summary(run_dir: Path, hotspots, topics, preview_path: Path, sent: bool, mode: str):
+    summary_path = run_dir / "run_summary.json"
+    _write_json(
+        summary_path,
+        {
+            "hotspots_count": len(hotspots),
+            "topics_count": len(topics),
+            "preview_path": str(preview_path),
+            "sent": bool(sent),
+            "mode": mode,
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+    return summary_path
+
+
+def run_once(send_email=None):
+    if send_email is None:
+        send_email = os.getenv("MUSICNEWS_SEND_EMAIL", "1").strip() == "1"
+
     logger.info("=" * 60)
-    logger.info(f"MusicNews 选题推荐系统 - {get_date_str()}")
+    logger.info("MusicNews run started")
     logger.info("=" * 60)
 
+    run_dir = None
+    summary_path = None
+
     try:
-        logger.info("\n[1/4] 抓取各平台热点...")
+        logger.info("[1/4] Fetch hotspots")
         fetcher = HotspotFetcher()
         hotspots = fetcher.fetch_all_hotspots()
 
         if not hotspots:
-            logger.error("没有抓到任何热点，任务停止。")
-            return False
+            logger.error("No hotspots fetched. Stop.")
+            return {
+                "success": False,
+                "mode": "send" if send_email else "preview",
+                "sent": False,
+                "run_dir": None,
+                "summary_path": None,
+                "error": "No hotspots fetched.",
+            }
 
-        logger.info(f"成功抓到 {len(hotspots)} 条热点")
-
-        logger.info("\n[2/4] 生成选题...")
+        logger.info("[2/4] Generate topics")
         generator = TopicGenerator()
         topics = generator.generate_topics(hotspots, num_topics=5)
 
         if not topics:
-            logger.error("没有生成出选题，任务停止。")
-            return False
-
-        logger.info(f"成功生成 {len(topics)} 条选题")
+            logger.error("No topics generated. Stop.")
+            return {
+                "success": False,
+                "mode": "send" if send_email else "preview",
+                "sent": False,
+                "run_dir": None,
+                "summary_path": None,
+                "error": "No topics generated.",
+            }
 
         run_dir = _make_run_dir()
         sender = EmailSender()
@@ -136,72 +167,89 @@ def main():
         _write_json(run_dir / "hotspots.json", hotspots)
         _write_json(run_dir / "topics.json", topics)
 
-        logger.info(f"预览文件已保存：{preview_path}")
-        logger.info("\n选题预览：")
-        for index, topic in enumerate(topics, start=1):
-            logger.info(f"{index}. {topic['title']}")
-            logger.info(
-                f"   分类：{topic['category']} | 爆款指数：{'★' * topic['potential_rating']}"
-            )
-
         validation = _validate_topics(topics, hotspots)
         _write_json(run_dir / "validation.json", validation)
 
         if not validation["ok"]:
-            logger.error("\n[3/4] 内容检查未通过，已停止发送。")
+            logger.error("Validation failed. Stop before send.")
             for item in validation["errors"]:
-                logger.error(f"- {item}")
-            logger.error(f"请先查看预览文件：{preview_path}")
-            return False
-
-        send_email = os.getenv("MUSICNEWS_SEND_EMAIL", "1").strip() == "1"
+                logger.error("- %s", item)
+            return {
+                "success": False,
+                "mode": "send" if send_email else "preview",
+                "sent": False,
+                "run_dir": str(run_dir),
+                "summary_path": None,
+                "error": "Validation failed.",
+                "validation": validation,
+            }
 
         if not send_email:
-            logger.info("\n[3/4] 当前是预览模式，已停止在发送前。")
-            logger.info(f"请先查看预览文件：{preview_path}")
-            _write_json(
-                run_dir / "run_summary.json",
-                {
-                    "hotspots_count": len(hotspots),
-                    "topics_count": len(topics),
-                    "preview_path": str(preview_path),
-                    "sent": False,
-                    "mode": "preview",
-                    "finished_at": datetime.now().isoformat(timespec="seconds"),
-                },
+            summary_path = _write_run_summary(
+                run_dir,
+                hotspots,
+                topics,
+                preview_path,
+                sent=False,
+                mode="preview",
             )
-            return True
+            logger.info("[3/4] Preview finished")
+            return {
+                "success": True,
+                "mode": "preview",
+                "sent": False,
+                "run_dir": str(run_dir),
+                "summary_path": str(summary_path),
+                "error": None,
+            }
 
-        logger.info("\n[3/4] 发送选题邮件...")
+        logger.info("[3/4] Send email")
         success = sender.send_email(topics, len(hotspots))
-        _write_json(
-            run_dir / "run_summary.json",
-            {
-                "hotspots_count": len(hotspots),
-                "topics_count": len(topics),
-                "preview_path": str(preview_path),
-                "sent": bool(success),
-                "mode": "send",
-                "finished_at": datetime.now().isoformat(timespec="seconds"),
-            },
+        summary_path = _write_run_summary(
+            run_dir,
+            hotspots,
+            topics,
+            preview_path,
+            sent=success,
+            mode="send",
         )
 
         if not success:
-            logger.error("邮件发送失败。")
-            return False
+            logger.error("Email send failed.")
+            return {
+                "success": False,
+                "mode": "send",
+                "sent": False,
+                "run_dir": str(run_dir),
+                "summary_path": str(summary_path),
+                "error": "Email send failed.",
+            }
 
-        logger.info("\n[4/4] 任务完成")
-        logger.info("=" * 60)
-        logger.info("今日选题已经检查通过，并成功发送。")
-        logger.info("=" * 60)
-        return True
+        logger.info("[4/4] Run finished")
+        return {
+            "success": True,
+            "mode": "send",
+            "sent": True,
+            "run_dir": str(run_dir),
+            "summary_path": str(summary_path),
+            "error": None,
+        }
 
     except Exception as error:
-        logger.error(f"程序执行出错: {error}")
-        import traceback
-
+        logger.error("Run failed: %s", error)
         traceback.print_exc()
-        return False
+        return {
+            "success": False,
+            "mode": "send" if send_email else "preview",
+            "sent": False,
+            "run_dir": str(run_dir) if run_dir else None,
+            "summary_path": str(summary_path) if summary_path else None,
+            "error": str(error),
+        }
+
+
+def main():
+    return run_once()["success"]
 
 
 if __name__ == "__main__":
