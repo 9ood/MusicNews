@@ -1,9 +1,11 @@
 """MusicNews main entry."""
 import json
 import os
+import re
 import sys
 import traceback
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from src.emailer import EmailSender
@@ -12,6 +14,12 @@ from src.topic_generator import TopicGenerator
 from src.utils import get_date_str, setup_logger
 
 logger = setup_logger(__name__)
+
+RUNTIME_DIR = Path(".runtime")
+SEND_LOCK_MAX_AGE_SECONDS = max(
+    int(os.getenv("MUSICNEWS_SEND_LOCK_MAX_AGE_SECONDS", str(6 * 60 * 60))),
+    300,
+)
 
 RISKY_KEYWORDS = [
     "smtp",
@@ -37,6 +45,88 @@ def _write_json(path: Path, payload) -> None:
     )
 
 
+def _get_successful_send_summary_for_date(day_str: str):
+    day_dir = Path("output") / day_str
+    if not day_dir.exists():
+        return None
+
+    run_dirs = sorted(
+        [item for item in day_dir.iterdir() if item.is_dir()],
+        key=lambda item: item.name,
+        reverse=True,
+    )
+
+    for run_dir in run_dirs:
+        summary_path = run_dir / "run_summary.json"
+        if not summary_path.exists():
+            continue
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if summary.get("mode") == "send" and summary.get("sent") is True:
+            return summary_path
+
+    return None
+
+
+class DailySendLock:
+    def __init__(self, day_str: str):
+        self.path = RUNTIME_DIR / f"send-{day_str}.lock"
+        self.acquired = False
+
+    def _cleanup_stale_lock(self):
+        if not self.path.exists():
+            return
+        try:
+            age_seconds = datetime.now().timestamp() - self.path.stat().st_mtime
+        except OSError:
+            return
+        if age_seconds < SEND_LOCK_MAX_AGE_SECONDS:
+            return
+        try:
+            self.path.unlink()
+            logger.warning("Removed stale send lock: %s", self.path)
+        except OSError:
+            return
+
+    def acquire(self) -> bool:
+        RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        self._cleanup_stale_lock()
+
+        try:
+            descriptor = os.open(
+                str(self.path),
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            )
+        except FileExistsError:
+            return False
+
+        with os.fdopen(descriptor, "w", encoding="utf-8") as lock_file:
+            lock_file.write(
+                json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "startedAt": datetime.now().isoformat(timespec="seconds"),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+
+        self.acquired = True
+        return True
+
+    def release(self):
+        if not self.acquired:
+            return
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+        self.acquired = False
+
+
 def _flatten_topic_text(value) -> str:
     if isinstance(value, str):
         return value
@@ -47,9 +137,55 @@ def _flatten_topic_text(value) -> str:
     return str(value)
 
 
+def _normalize_source_title(source: str) -> str:
+    text = re.sub(r"^\[[^\]]+\]\s*", "", str(source or "").strip()).lower()
+    text = re.sub(r"[^\w\u4e00-\u9fff]", "", text)
+    return text
+
+
+def _extract_source_platform(source: str) -> str:
+    text = str(source or "").strip()
+    match = re.match(r"^\[([^\]]+)\]", text)
+    if match:
+        return match.group(1).strip()
+    return text
+
+
+def _source_key(source: str) -> tuple:
+    return (
+        _extract_source_platform(source).lower(),
+        _normalize_source_title(source),
+    )
+
+
+def _sources_are_similar(left: str, right: str) -> bool:
+    left_text = _normalize_source_title(left)
+    right_text = _normalize_source_title(right)
+
+    if not left_text or not right_text:
+        return False
+
+    if left_text == right_text:
+        return True
+
+    shorter = min(len(left_text), len(right_text))
+    if shorter >= 6 and (left_text in right_text or right_text in left_text):
+        return True
+
+    return SequenceMatcher(None, left_text, right_text).ratio() >= 0.72
+
+
 def _validate_topics(topics, hotspots):
     errors = []
     seen_titles = set()
+    seen_sources = set()
+    unique_sources = []
+    platform_counts = {}
+    available_platforms = {
+        str(spot.get("source", "")).strip()
+        for spot in hotspots
+        if str(spot.get("source", "")).strip()
+    }
 
     if len(hotspots) < 10:
         errors.append(f"Too few hotspots: only {len(hotspots)} items.")
@@ -73,6 +209,20 @@ def _validate_topics(topics, hotspots):
 
         if not source:
             errors.append(f"Topic {index} is missing hotspot source.")
+        else:
+            canonical_source = _source_key(source)
+            if canonical_source in seen_sources:
+                errors.append(f"Topic {index} hotspot source is duplicated.")
+            else:
+                seen_sources.add(canonical_source)
+                platform = _extract_source_platform(source)
+                if platform:
+                    platform_counts[platform] = platform_counts.get(platform, 0) + 1
+                for previous_source in unique_sources:
+                    if _sources_are_similar(source, previous_source):
+                        errors.append(f"Topic {index} hotspot source is too similar to another topic.")
+                        break
+                unique_sources.append(source)
 
         if not angle:
             errors.append(f"Topic {index} is missing angle.")
@@ -96,6 +246,15 @@ def _validate_topics(topics, hotspots):
             if keyword in lowered:
                 errors.append(f"Topic {index} contains risky keyword: {keyword}")
                 break
+
+    if len(available_platforms) > 1 and platform_counts:
+        required_platforms = min(len(topics), len(available_platforms))
+        if len(platform_counts) < required_platforms:
+            errors.append("Topics are not using enough different platforms.")
+
+        max_per_platform = (len(topics) + len(available_platforms) - 1) // len(available_platforms)
+        if any(count > max_per_platform for count in platform_counts.values()):
+            errors.append("Topics are too concentrated on one platform.")
 
     return {
         "ok": len(errors) == 0,
@@ -129,6 +288,38 @@ def run_once(send_email=None):
 
     run_dir = None
     summary_path = None
+    send_lock = None
+    run_day = get_date_str()
+
+    if send_email:
+        existing_summary = _get_successful_send_summary_for_date(run_day)
+        if existing_summary:
+            logger.warning(
+                "Skip duplicate send because today already succeeded: %s",
+                existing_summary,
+            )
+            return {
+                "success": True,
+                "mode": "send",
+                "sent": False,
+                "run_dir": str(existing_summary.parent),
+                "summary_path": str(existing_summary),
+                "error": None,
+                "duplicateSkipped": True,
+            }
+
+        send_lock = DailySendLock(run_day)
+        if not send_lock.acquire():
+            logger.warning("Skip duplicate send because another send is already running.")
+            return {
+                "success": True,
+                "mode": "send",
+                "sent": False,
+                "run_dir": None,
+                "summary_path": None,
+                "error": None,
+                "duplicateSkipped": True,
+            }
 
     try:
         logger.info("[1/4] Fetch hotspots")
@@ -246,6 +437,9 @@ def run_once(send_email=None):
             "summary_path": str(summary_path) if summary_path else None,
             "error": str(error),
         }
+    finally:
+        if send_lock:
+            send_lock.release()
 
 
 def main():

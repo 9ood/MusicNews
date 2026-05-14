@@ -49,14 +49,14 @@ class EmailSender:
         .header h1 {{ margin: 0; font-size: 28px; }}
         .header p {{ margin: 10px 0 0 0; opacity: 0.9; }}
         .topic {{ background: #f8f9fa; border-left: 4px solid #667eea; padding: 20px; margin-bottom: 20px; border-radius: 5px; }}
-        .topic-title {{ font-size: 20px; font-weight: bold; color: #2c3e50; margin-bottom: 10px; }}
-        .topic-meta {{ display: flex; flex-wrap: wrap; gap: 15px; margin-bottom: 15px; font-size: 14px; }}
-        .meta-item {{ display: flex; align-items: center; }}
-        .meta-label {{ color: #7f8c8d; margin-right: 5px; }}
-        .meta-value {{ color: #2c3e50; font-weight: 500; }}
-        .content-points {{ margin-top: 15px; }}
+        .topic-title {{ font-size: 20px; font-weight: bold; color: #2c3e50; margin-bottom: 14px; }}
+        .meta-block {{ margin-bottom: 14px; }}
+        .meta-row {{ margin-bottom: 8px; font-size: 14px; line-height: 1.7; }}
+        .meta-label {{ color: #7f8c8d; margin-right: 6px; display: inline-block; min-width: 84px; vertical-align: top; }}
+        .meta-value {{ color: #2c3e50; font-weight: 500; display: inline-block; max-width: calc(100% - 96px); vertical-align: top; }}
+        .content-points {{ margin-top: 14px; }}
         .content-points li {{ margin-bottom: 8px; color: #555; }}
-        .reason {{ background: #fff3cd; padding: 10px; border-radius: 5px; margin-top: 10px; font-size: 14px; }}
+        .reason {{ background: #fff3cd; padding: 10px; border-radius: 5px; margin-top: 12px; font-size: 14px; }}
         .footer {{ text-align: center; padding: 20px; color: #7f8c8d; font-size: 14px; border-top: 1px solid #e0e0e0; margin-top: 30px; }}
         .stars {{ color: #ffc107; }}
         .badge {{ display: inline-block; padding: 4px 8px; border-radius: 3px; font-size: 12px; font-weight: 500; }}
@@ -80,16 +80,16 @@ class EmailSender:
             html += f"""
         <div class="topic">
             <div class="topic-title">[选题{index}] {topic.get('title', '')}</div>
-            <div class="topic-meta">
-                <div class="meta-item">
+            <div class="meta-block">
+                <div class="meta-row">
                     <span class="meta-label">热点来源：</span>
                     <span class="meta-value">{topic.get('hotspot_source', '未知')}</span>
                 </div>
-                <div class="meta-item">
+                <div class="meta-row">
                     <span class="meta-label">切入角度：</span>
                     <span class="meta-value">{topic.get('angle', '未知')}</span>
                 </div>
-                <div class="meta-item">
+                <div class="meta-row">
                     <span class="meta-label">爆款指数：</span>
                     <span class="meta-value stars">{stars}</span>
                 </div>

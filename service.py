@@ -12,7 +12,7 @@ from src.utils import setup_logger
 
 logger = setup_logger(__name__)
 
-HOST = "127.0.0.1"
+HOST = os.getenv("MUSICNEWS_SERVICE_HOST", "0.0.0.0")
 PORT = int(os.getenv("MUSICNEWS_SERVICE_PORT", "4332"))
 SCHEDULE_HOUR = int(os.getenv("MUSICNEWS_SCHEDULE_HOUR", "9"))
 SCHEDULE_MINUTE = int(os.getenv("MUSICNEWS_SCHEDULE_MINUTE", "0"))
@@ -20,6 +20,76 @@ POLL_SECONDS = max(int(os.getenv("MUSICNEWS_SERVICE_POLL_SECONDS", "15")), 5)
 
 RUNTIME_DIR = Path(".runtime")
 STATE_FILE = RUNTIME_DIR / "musicnews_service_state.json"
+LOCK_FILE = RUNTIME_DIR / "musicnews_service.lock"
+
+
+def process_exists(pid):
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+class ServiceInstanceLock:
+    def __init__(self):
+        self._path = LOCK_FILE
+        self._acquired = False
+
+    def _cleanup_stale_lock(self):
+        if not self._path.exists():
+            return
+
+        try:
+            payload = json.loads(self._path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+
+        if process_exists(payload.get("pid")):
+            return
+
+        try:
+            self._path.unlink()
+        except OSError:
+            return
+
+    def acquire(self):
+        RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        self._cleanup_stale_lock()
+
+        try:
+            descriptor = os.open(
+                str(self._path),
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            )
+        except FileExistsError:
+            return False
+
+        with os.fdopen(descriptor, "w", encoding="utf-8") as lock_file:
+            lock_file.write(
+                json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "startedAt": datetime.now().isoformat(timespec="seconds"),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+
+        self._acquired = True
+        return True
+
+    def release(self):
+        if not self._acquired:
+            return
+        try:
+            self._path.unlink()
+        except FileNotFoundError:
+            pass
+        self._acquired = False
 
 
 class ServiceState:
@@ -58,10 +128,12 @@ class ServiceState:
 
     def _persist(self):
         RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-        STATE_FILE.write_text(
+        temp_state_file = STATE_FILE.with_name(f"{STATE_FILE.name}.{os.getpid()}.tmp")
+        temp_state_file.write_text(
             json.dumps(self._state, ensure_ascii=False, indent=2),
             encoding="utf-8"
         )
+        os.replace(temp_state_file, STATE_FILE)
 
     def _sync_with_existing_output(self):
         today = datetime.now().strftime("%Y-%m-%d")
@@ -194,36 +266,44 @@ def run_scheduler(state, stop_event):
 
 def main():
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-    stop_event = threading.Event()
-    state = ServiceState()
-    Handler.state = state
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
-
-    def handle_stop(signum, frame):
-        del signum, frame
-        state.mark_stopping()
-        stop_event.set()
-        server.shutdown()
-
-    signal.signal(signal.SIGTERM, handle_stop)
-    signal.signal(signal.SIGINT, handle_stop)
-
-    scheduler_thread = threading.Thread(
-        target=run_scheduler,
-        args=(state, stop_event),
-        daemon=True
-    )
-    scheduler_thread.start()
+    instance_lock = ServiceInstanceLock()
+    if not instance_lock.acquire():
+        logger.warning("MusicNews service is already starting or running in another process.")
+        return
 
     try:
-        state.mark_running()
-        logger.info("MusicNews service listening on %s:%s", HOST, PORT)
-        server.serve_forever(poll_interval=0.5)
+        stop_event = threading.Event()
+        state = ServiceState()
+        Handler.state = state
+        server = ThreadingHTTPServer((HOST, PORT), Handler)
+
+        def handle_stop(signum, frame):
+            del signum, frame
+            state.mark_stopping()
+            stop_event.set()
+            server.shutdown()
+
+        signal.signal(signal.SIGTERM, handle_stop)
+        signal.signal(signal.SIGINT, handle_stop)
+
+        scheduler_thread = threading.Thread(
+            target=run_scheduler,
+            args=(state, stop_event),
+            daemon=True
+        )
+        scheduler_thread.start()
+
+        try:
+            state.mark_running()
+            logger.info("MusicNews service listening on %s:%s", HOST, PORT)
+            server.serve_forever(poll_interval=0.5)
+        finally:
+            stop_event.set()
+            scheduler_thread.join(timeout=5)
+            state.mark_stopping()
+            server.server_close()
     finally:
-        stop_event.set()
-        scheduler_thread.join(timeout=5)
-        state.mark_stopping()
-        server.server_close()
+        instance_lock.release()
 
 
 if __name__ == "__main__":

@@ -28,7 +28,7 @@
     },
     "processMatch": {
       "name": "python.exe",
-      "commandLinePattern": "*service.py*"
+      "commandLinePattern": "*MusicNews*service.py*"
     },
     "startupProbe": {
       "initialDelayMs": 1000,
